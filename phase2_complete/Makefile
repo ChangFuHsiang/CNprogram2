@@ -1,3 +1,4 @@
+# (基於原始檔案修改)
 CC = g++
 CFLAGS = -std=c++14 -Wall -Wextra -g -pthread -O0
 
@@ -44,9 +45,11 @@ all: $(SERVER) $(CLIENT)
 	@echo "║  ✅ File Transfer (Encrypted)            ║"
 	@echo "╚══════════════════════════════════════════╝"
 	@echo ""
-	@echo "Usage:"
-	@echo "  ./$(SERVER) [port]              - Start server"
-	@echo "  ./$(CLIENT) [ip] [port]         - Start client"
+	@echo "🚀 Quick Start:"
+	@echo "  1. make setup           - Create Alice/Bob test env"
+	@echo "  2. make run-server      - Start server"
+	@echo "  3. make run-alice       - Start client Alice (Sender)"
+	@echo "  4. make run-bob         - Start client Bob (Receiver)"
 
 $(SERVER): $(SERVER_SRC) $(HEADERS)
 	@echo "🔨 Building Server..."
@@ -59,14 +62,34 @@ $(CLIENT): $(CLIENT_SRC) $(HEADERS)
 	@echo "✅ Client built"
 
 clean:
-	@echo "🧹 Cleaning..."
+	@echo "🧹 Cleaning binaries..."
 	rm -f $(SERVER) $(CLIENT)
 	@echo "✅ Clean complete"
 
-rebuild: clean all
+# === ✨ 新增：自動化測試環境設置 ===
 
-# 檢查 OpenSSL
-check-openssl:
+# 建立獨立的測試資料夾，防止檔案覆蓋
+setup: all
+	@echo "📦 Setting up test environment..."
+	@mkdir -p alice_dir
+	@mkdir -p bob_dir
+	@cp $(CLIENT) alice_dir/
+	@cp $(CLIENT) bob_dir/
+	@echo "Hello World from Alice!" > alice_dir/test.txt
+	@echo "✅ Environment ready:"
+	@echo "   📂 alice_dir/ (contains test.txt)"
+	@echo "   📂 bob_dir/"
+
+# 清除測試環境
+clean-env: clean
+	@echo "🧹 Cleaning test environment..."
+	rm -rf alice_dir bob_dir
+	@echo "✅ Test environment removed"
+
+rebuild: clean-env all
+
+# 檢查依賴
+check-deps:
 	@echo "📋 Checking OpenSSL..."
 ifeq ($(UNAME_S),Darwin)
 	@brew list openssl >/dev/null 2>&1 || (echo "❌ Install: brew install openssl" && exit 1)
@@ -75,44 +98,28 @@ else
 		(echo "❌ Install: sudo apt-get install libssl-dev" && exit 1)
 endif
 	@echo "✅ OpenSSL found"
-
-# 檢查所有檔案
-check-deps: check-openssl
 	@echo "📋 Checking files..."
 	@for f in $(HEADERS) $(SERVER_SRC) $(CLIENT_SRC); do \
 		[ -f "$$f" ] || (echo "❌ Missing: $$f" && exit 1); \
 	done
 	@echo "✅ All files present"
 
-# 執行
+# === 🚀 執行指令 (修改版) ===
+
 run-server: $(SERVER)
+	@echo "🟢 Starting Server on port 8080..."
 	./$(SERVER) 8080
 
-run-client: $(CLIENT)
-	./$(CLIENT) 127.0.0.1 8080
+# 在 alice_dir 中執行 Client
+run-alice:
+	@if [ ! -d "alice_dir" ]; then echo "⚠️ Please run 'make setup' first"; exit 1; fi
+	@echo "👤 Starting Alice..."
+	@cd alice_dir && ./$(CLIENT) 127.0.0.1 8080
 
-# 測試
-test: $(SERVER) $(CLIENT)
-	@echo "🧪 Ready for testing"
-	@echo "1. Start server:  ./$(SERVER) 8080"
-	@echo "2. Start client:  ./$(CLIENT) 127.0.0.1 8080"
+# 在 bob_dir 中執行 Client
+run-bob:
+	@if [ ! -d "bob_dir" ]; then echo "⚠️ Please run 'make setup' first"; exit 1; fi
+	@echo "👤 Starting Bob..."
+	@cd bob_dir && ./$(CLIENT) 127.0.0.1 8080
 
-# 幫助
-help:
-	@echo "=== Phase 2 Complete Makefile ==="
-	@echo ""
-	@echo "Targets:"
-	@echo "  all          - Build everything (default)"
-	@echo "  clean        - Remove binaries"
-	@echo "  rebuild      - Clean and rebuild"
-	@echo "  check-deps   - Check dependencies"
-	@echo "  run-server   - Run server on port 8080"
-	@echo "  run-client   - Run client"
-	@echo "  test         - Show test instructions"
-	@echo "  help         - Show this help"
-	@echo ""
-	@echo "OpenSSL Installation:"
-	@echo "  macOS:  brew install openssl"
-	@echo "  Ubuntu: sudo apt-get install libssl-dev"
-
-.PHONY: all clean rebuild check-openssl check-deps run-server run-client test help
+.PHONY: all clean rebuild check-deps run-server run-alice run-bob setup clean-env
