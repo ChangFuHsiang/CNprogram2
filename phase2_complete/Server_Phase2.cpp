@@ -620,7 +620,8 @@ public:
                         encMsg = encrypted;
                     }
                 }
-                send(sockIt->second, encMsg.c_str(), encMsg.length(), MSG_NOSIGNAL);
+                string msgToSend = encMsg + "\n";
+                send(sockIt->second, msgToSend.c_str(), msgToSend.length(), MSG_NOSIGNAL);
             }
         }
     }

@@ -186,8 +186,20 @@ public:
                 size_t actualRead = file.gcount();
                 
                 if (actualRead == 0) {
-                    std::cerr << "❌ Failed to read file" << std::endl;
-                    break;
+                    // 修改這裡，印出更多除錯資訊
+                    std::cerr << "❌ Failed to read file." << std::endl;
+                    std::cerr << "   Desired read: " << toRead << " bytes" << std::endl;
+                    std::cerr << "   Stream state (good/eof/fail/bad): " 
+                            << file.good() << "/" << file.eof() << "/" 
+                            << file.fail() << "/" << file.bad() << std::endl;
+                    
+                    // 如果是 Unix 系統，可以印出系統錯誤碼
+                    if (file.fail()) {
+                        std::cerr << "   System Error: " << strerror(errno) << std::endl;
+                    }
+                    
+                    close(targetSocket);
+                    return false;
                 }
                 
                 std::string chunkData(buffer.data(), actualRead);

@@ -25,6 +25,7 @@ private:
     int myListenPort;
     bool isLoggedIn;
     string currentUser;
+    string incomingBuffer;
     
     // P2P通訊支援
     unique_ptr<P2PClient> p2pClient;
@@ -164,20 +165,29 @@ public:
                     memset(buffer, 0, sizeof(buffer));
                     int received = recv(clientSocket, buffer, sizeof(buffer) - 1, MSG_DONTWAIT);
                     if (received > 0) {
-                        string msg(buffer);
+                        // 1. 將收到的資料加入緩衝區
+                        incomingBuffer.append(buffer, received);
                         
-                        // 解密
-                        if (Crypto::isEncryptedMessage(msg)) {
-                            string decrypted = crypto.decryptMessage(msg);
-                            if (!decrypted.empty()) {
-                                msg = decrypted;
+                        // 2. 檢查是否有完整的訊息（以 \n 分割）
+                        size_t pos = 0;
+                        while ((pos = incomingBuffer.find('\n')) != string::npos) {
+                            // 取出一條完整訊息
+                            string msg = incomingBuffer.substr(0, pos);
+                            // 從緩衝區移除這條訊息和換行符
+                            incomingBuffer.erase(0, pos + 1);
+                            
+                            // 3. 原本的解密與處理邏輯移到這裡
+                            if (Crypto::isEncryptedMessage(msg)) {
+                                string decrypted = crypto.decryptMessage(msg);
+                                if (!decrypted.empty()) {
+                                    msg = decrypted;
+                                }
                             }
-                        }
-                        
-                        // 處理群組訊息
-                        if (msg.find("ROOM_MSG:") == 0 || msg.find("ROOM_NOTIFICATION:") == 0) {
-                            cout << "\n📢 " << msg << endl;
-                            cout << "Enter command: " << flush;
+                            
+                            if (msg.find("ROOM_MSG:") == 0 || msg.find("ROOM_NOTIFICATION:") == 0) {
+                                cout << "\n📢 " << msg << endl;
+                                cout << "Enter command: " << flush;
+                            }
                         }
                     }
                 }
@@ -473,6 +483,10 @@ public:
         string filepath;
         cout << "Enter file path: ";
         getline(cin, filepath);
+
+        if (!filepath.empty() && filepath.back() == '\r') filepath.pop_back(); 
+        size_t last = filepath.find_last_not_of(' ');
+        if (last != string::npos) filepath = filepath.substr(0, last + 1);
         
         if (p2pClient && p2pClient->sendFile(targetIP, targetPort, filepath)) {
             cout << "✅ File transfer complete!" << endl;
