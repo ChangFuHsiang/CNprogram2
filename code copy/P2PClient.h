@@ -11,6 +11,17 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include "Crypto.h"
+
+/**
+ * Phase 2: P2P Client with Encryption Support
+ * 
+ * 功能：
+ * - P2P 直接訊息傳送
+ * - P2P 監聽接收
+ * - AES-256-CBC 加密/解密
+ * - 加密訊息格式: P2P_MSG:sender:ENC:IV:CIPHERTEXT
+ */
 
 class P2PClient {
 private:
@@ -21,8 +32,32 @@ private:
     std::string myUsername;
     mutable std::mutex p2p_mutex;
     
+    // Phase 2: 加密模組
+    Crypto crypto;
+    bool encryptionEnabled;
+    
 public:
-    P2PClient(int port, const std::string& username) : listenPort(port), myUsername(username) {}
+    P2PClient(int port, const std::string& username) 
+        : listenPort(port), myUsername(username), encryptionEnabled(true) {
+        
+        // 執行加密自我測試
+        if (crypto.selfTest()) {
+            std::cout << "🔐 P2P Encryption enabled (AES-256-CBC)" << std::endl;
+        } else {
+            std::cerr << "⚠️ Encryption self-test failed, disabling encryption" << std::endl;
+            encryptionEnabled = false;
+        }
+    }
+    
+    // 啟用/停用加密
+    void setEncryption(bool enabled) {
+        encryptionEnabled = enabled;
+        std::cout << "🔐 P2P Encryption " << (enabled ? "enabled" : "disabled") << std::endl;
+    }
+    
+    bool isEncryptionEnabled() const {
+        return encryptionEnabled;
+    }
     
     // 啟動P2P監聽
     bool startP2PListener() {
@@ -66,6 +101,9 @@ public:
             });
             
             std::cout << "✅ P2P Listener started on port " << listenPort << std::endl;
+            if (encryptionEnabled) {
+                std::cout << "🔒 All P2P messages will be encrypted" << std::endl;
+            }
             return true;
             
         } catch (const std::exception& e) {
@@ -105,7 +143,7 @@ public:
     // 處理incoming P2P連接
     void handleP2PConnection(int clientSocket, const std::string& clientIP) {
         try {
-            char buffer[1024];
+            char buffer[4096];  // 增大緩衝區以容納加密訊息
             memset(buffer, 0, sizeof(buffer));
             
             int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
@@ -119,14 +157,36 @@ public:
             std::string message(buffer);
             
             // 解析P2P訊息格式: P2P_MSG:sender:content
+            // 加密格式: P2P_MSG:sender:ENC:IV:CIPHERTEXT
             if (message.find("P2P_MSG:") == 0) {
                 size_t firstColon = message.find(':', 8);
                 if (firstColon != std::string::npos) {
                     std::string sender = message.substr(8, firstColon - 8);
                     std::string content = message.substr(firstColon + 1);
                     
+                    // 檢查是否為加密訊息
+                    std::string displayContent;
+                    bool wasEncrypted = false;
+                    
+                    if (Crypto::isEncryptedMessage(content)) {
+                        // 解密訊息
+                        displayContent = crypto.decryptMessage(content);
+                        wasEncrypted = true;
+                        if (displayContent.empty()) {
+                            displayContent = "[Decryption failed]";
+                        }
+                    } else {
+                        // 未加密的訊息
+                        displayContent = content;
+                    }
+                    
                     std::lock_guard<std::mutex> lock(p2p_mutex);
-                    std::cout << "\n💬 [P2P] " << sender << ": " << content << std::endl;
+                    std::cout << std::endl;
+                    if (wasEncrypted) {
+                        std::cout << "🔓💬 [P2P-Encrypted] " << sender << ": " << displayContent << std::endl;
+                    } else {
+                        std::cout << "💬 [P2P] " << sender << ": " << displayContent << std::endl;
+                    }
                     std::cout << "Press Enter to continue...";
                     std::cout.flush();
                     
@@ -143,10 +203,14 @@ public:
         close(clientSocket);
     }
     
-    // 發送P2P訊息
+    // 發送P2P訊息 (支援加密)
     bool sendP2PMessage(const std::string& targetIP, int targetPort, const std::string& message) {
         try {
-            std::cout << "📤 Sending P2P message to " << targetIP << ":" << targetPort << std::endl;
+            std::cout << "📤 Sending P2P message to " << targetIP << ":" << targetPort;
+            if (encryptionEnabled) {
+                std::cout << " (encrypted)";
+            }
+            std::cout << std::endl;
             
             // 建立到目標的socket連接
             int targetSocket = socket(AF_INET, SOCK_STREAM, 0);
@@ -172,8 +236,22 @@ public:
                 return false;
             }
             
-            // 構造P2P訊息格式
-            std::string p2pMessage = "P2P_MSG:" + myUsername + ":" + message;
+            // 構造P2P訊息
+            std::string p2pMessage;
+            if (encryptionEnabled) {
+                // 加密訊息內容
+                std::string encryptedContent = crypto.encryptMessage(message);
+                if (encryptedContent.empty()) {
+                    std::cerr << "P2P: Encryption failed, sending unencrypted" << std::endl;
+                    p2pMessage = "P2P_MSG:" + myUsername + ":" + message;
+                } else {
+                    p2pMessage = "P2P_MSG:" + myUsername + ":" + encryptedContent;
+                    std::cout << "🔒 Message encrypted successfully" << std::endl;
+                }
+            } else {
+                // 未加密訊息
+                p2pMessage = "P2P_MSG:" + myUsername + ":" + message;
+            }
             
             // 發送訊息
             ssize_t sent = send(targetSocket, p2pMessage.c_str(), p2pMessage.length(), 0);
@@ -192,7 +270,11 @@ public:
                 ackBuffer[ackReceived] = '\0';
                 std::string ack(ackBuffer);
                 if (ack.find("P2P_ACK:") == 0) {
-                    std::cout << "✅ P2P message delivered successfully" << std::endl;
+                    std::cout << "✅ P2P message delivered successfully";
+                    if (encryptionEnabled) {
+                        std::cout << " (encrypted)";
+                    }
+                    std::cout << std::endl;
                 } else {
                     std::cout << "⚠️ Unexpected response: " << ack << std::endl;
                 }

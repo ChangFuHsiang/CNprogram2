@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include "ThreadPool.h"
+#include "Crypto.h"
 
 using namespace std;
 
@@ -40,10 +41,22 @@ private:
     // Phase 2: Professional ThreadPool
     ThreadPool thread_pool;
     
+    // Phase 2: 加密模組
+    Crypto crypto;
+    bool encryptionEnabled;
+    
 public:
-    ChatServer(int port) : serverPort(port), thread_pool(10) {
-        cout << "=== Phase 2 ChatServer ===" << endl;
+    ChatServer(int port) : serverPort(port), thread_pool(10), encryptionEnabled(true) {
+        cout << "=== Phase 2 ChatServer with Encryption ===" << endl;
         cout << "Initialized with Professional ThreadPool (10 workers)" << endl;
+        
+        // 測試加密功能
+        if (crypto.selfTest()) {
+            cout << "🔐 Server encryption enabled (AES-256-CBC)" << endl;
+        } else {
+            cerr << "⚠️ Encryption self-test failed, disabling encryption" << endl;
+            encryptionEnabled = false;
+        }
     }
     
     bool startServer() {
@@ -76,12 +89,14 @@ public:
         
         cout << "Phase 2 Server started on port " << serverPort << endl;
         cout << "Worker Pool Status: " << thread_pool.getWorkerCount() << " workers ready" << endl;
+        cout << "Encryption Status: " << (encryptionEnabled ? "✅ Enabled" : "❌ Disabled") << endl;
         return true;
     }
     
     void handleClient(int clientSocket, string clientIP, int clientId) {
-        char buffer[1024];
+        char buffer[4096];  // 增大緩衝區以容納加密訊息
         string currentUser = "";
+        bool clientEncryptionEnabled = false;
         
         cout << "[Client " << clientId << "] Started handling " << clientIP 
              << " (Worker Thread: " << this_thread::get_id() << ")" << endl;
@@ -109,10 +124,27 @@ public:
                     message.erase(pos + 1);
                 }
                 
-                cout << "[Client " << clientId << "] Received: [" << message << "] (Queue size: " 
-                     << thread_pool.getQueueSize() << ")" << endl;
+                // 檢查是否為加密訊息
+                string decryptedMessage = message;
+                bool wasEncrypted = false;
                 
-                if (message.empty()) {
+                if (Crypto::isEncryptedMessage(message)) {
+                    decryptedMessage = crypto.decryptMessage(message);
+                    wasEncrypted = true;
+                    if (decryptedMessage.empty()) {
+                        cout << "[Client " << clientId << "] Decryption failed" << endl;
+                        string errorResponse = "ERROR: Decryption failed";
+                        send(clientSocket, errorResponse.c_str(), errorResponse.length(), 0);
+                        continue;
+                    }
+                    clientEncryptionEnabled = true;
+                }
+                
+                cout << "[Client " << clientId << "] Received: [" << decryptedMessage << "]";
+                if (wasEncrypted) cout << " (decrypted)";
+                cout << " (Queue size: " << thread_pool.getQueueSize() << ")" << endl;
+                
+                if (decryptedMessage.empty()) {
                     cout << "[Client " << clientId << "] Empty message, continuing..." << endl;
                     continue;
                 }
@@ -120,17 +152,29 @@ public:
                 // 處理指令
                 string response;
                 try {
-                    response = processCommand(message, currentUser, clientIP, clientId);
+                    response = processCommand(decryptedMessage, currentUser, clientIP, clientId);
                 } catch (const exception& e) {
                     cout << "[Client " << clientId << "] Command processing error: " << e.what() << endl;
                     response = "ERROR: Command processing failed";
                 }
                 
-                cout << "[Client " << clientId << "] Sending: [" << response << "]" << endl;
+                // 如果客戶端使用加密，回應也加密
+                string finalResponse = response;
+                if (clientEncryptionEnabled && encryptionEnabled) {
+                    string encryptedResponse = crypto.encryptMessage(response);
+                    if (!encryptedResponse.empty()) {
+                        finalResponse = encryptedResponse;
+                        cout << "[Client " << clientId << "] Sending: [" << response << "] (encrypted)" << endl;
+                    } else {
+                        cout << "[Client " << clientId << "] Sending: [" << response << "] (encryption failed, sending plain)" << endl;
+                    }
+                } else {
+                    cout << "[Client " << clientId << "] Sending: [" << response << "]" << endl;
+                }
                 
                 // 發送回應
-                const char* responseData = response.c_str();
-                size_t responseLen = response.length();
+                const char* responseData = finalResponse.c_str();
+                size_t responseLen = finalResponse.length();
                 
                 ssize_t sent = send(clientSocket, responseData, responseLen, 0);
                 if (sent < 0) {
@@ -142,7 +186,7 @@ public:
                 }
                 
                 // 檢查登出
-                if (message.find("LOGOUT") == 0) {
+                if (decryptedMessage.find("LOGOUT") == 0) {
                     cout << "[Client " << clientId << "] Logout requested, closing connection" << endl;
                     break;
                 }
@@ -221,11 +265,15 @@ public:
                 getline(ss, msg);
                 return handleMessage(currentUser, msg, clientId);
             }
-            // Phase 2新增：P2P用戶資訊查詢
+            // Phase 2：P2P用戶資訊查詢
             else if (cmd == "GET_USER_INFO") {
                 string targetUser;
                 ss >> targetUser;
                 return handleGetUserInfo(targetUser, currentUser, clientId);
+            }
+            // Phase 2：加密狀態查詢
+            else if (cmd == "ENCRYPTION_STATUS") {
+                return handleEncryptionStatus(clientId);
             }
             else {
                 return "ERROR: Unknown command: " + cmd;
@@ -381,7 +429,7 @@ public:
         }
     }
     
-    // Phase 2新增：獲取用戶P2P連接資訊（為P2P通訊準備）
+    // Phase 2：獲取用戶P2P連接資訊
     string handleGetUserInfo(const string& targetUser, const string& requester, int clientId) {
         try {
             cout << "[Client " << clientId << "] GetUserInfo request: " << requester << " asking for " << targetUser << endl;
@@ -417,9 +465,18 @@ public:
         }
     }
     
+    // Phase 2：加密狀態查詢
+    string handleEncryptionStatus(int clientId) {
+        string status = "ENCRYPTION_STATUS:";
+        status += encryptionEnabled ? "ENABLED:AES-256-CBC" : "DISABLED";
+        cout << "[Client " << clientId << "] Encryption status: " << status << endl;
+        return status;
+    }
+    
     void run() {
         cout << "=== Phase 2 Server Running ===" << endl;
         cout << "ThreadPool Status: " << thread_pool.getWorkerCount() << " workers available" << endl;
+        cout << "Encryption: " << (encryptionEnabled ? "✅ AES-256-CBC" : "❌ Disabled") << endl;
         cout << "Ready for concurrent client connections..." << endl;
         
         while (true) {
@@ -472,6 +529,10 @@ int main(int argc, char* argv[]) {
     }
     
     cout << "=== Phase 2 Socket Programming Server ===" << endl;
+    cout << "Features:" << endl;
+    cout << "  ✅ Professional ThreadPool (10 workers)" << endl;
+    cout << "  ✅ P2P User Discovery" << endl;
+    cout << "  ✅ OpenSSL Encryption (AES-256-CBC)" << endl;
     cout << "Starting on port " << port << endl;
     
     ChatServer server(port);
